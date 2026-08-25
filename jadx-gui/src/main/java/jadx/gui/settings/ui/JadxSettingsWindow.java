@@ -742,6 +742,14 @@ public class JadxSettingsWindow extends JDialog {
 			mainWindow.loadSettings();
 		});
 
+		JSpinner classTreeFilterExpansionLimit = new JSpinner(
+				new SpinnerNumberModel(settings.getClassTreeFilterExpansionLimit(), 0, 20000, 1));
+		classTreeFilterExpansionLimit
+				.addChangeListener(ev -> {
+					settings.setClassTreeFilterExpansionLimit((Integer) classTreeFilterExpansionLimit.getValue());
+					mainWindow.loadSettings();
+				});
+
 		SettingsGroup group = new SettingsGroup(NLS.str("preferences.other"));
 		group.addRow(NLS.str("preferences.lineNumbersMode"), lineNumbersMode);
 		group.addRow(NLS.str("preferences.jumpOnDoubleClick"), jumpOnDoubleClick);
@@ -753,6 +761,7 @@ public class JadxSettingsWindow extends JDialog {
 		group.addRow(NLS.str("preferences.xposed_codegen_language"), xposedCodegenLanguage);
 		group.addRow(NLS.str("preferences.check_for_updates"), update);
 		group.addRow(NLS.str("preferences.update_channel"), updateChannel);
+		group.addRow(NLS.str("preferences.class_tree_filter_expansion_limit"), classTreeFilterExpansionLimit);
 		return group;
 	}
 

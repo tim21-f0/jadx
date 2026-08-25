@@ -78,6 +78,7 @@ public class JadxSettingsData extends JadxGUIArgs {
 	private boolean useAlternativeFileDialog = false;
 	private boolean codeAreaLineWrap = false;
 	private int searchResultsPerPage = 50;
+	private int classTreeFilterExpansionLimit = 500;
 	private boolean useAutoSearch = true;
 	private boolean keepCommonDialogOpen = false;
 	private LineNumbersMode lineNumbersMode = LineNumbersMode.AUTO;
@@ -371,6 +372,14 @@ public class JadxSettingsData extends JadxGUIArgs {
 
 	public void setSearchResultsPerPage(int searchResultsPerPage) {
 		this.searchResultsPerPage = searchResultsPerPage;
+	}
+
+	public int getClassTreeFilterExpansionLimit() {
+		return classTreeFilterExpansionLimit;
+	}
+
+	public void setClassTreeFilterExpansionLimit(int classTreeFilterExpansionLimit) {
+		this.classTreeFilterExpansionLimit = classTreeFilterExpansionLimit;
 	}
 
 	public int getSettingsVersion() {
