@@ -48,13 +48,30 @@ public class BackgroundExecutor {
 	}
 
 	public synchronized void execute(IBackgroundTask task) {
-		InternalTask internalTask = buildTask(task);
-		taskQueueExecutor.execute(() -> runTask(internalTask));
+		executeOn(taskQueueExecutor, task);
 	}
 
 	public synchronized Future<TaskStatus> executeWithFuture(IBackgroundTask task) {
+		return executeOnWithFuture(taskQueueExecutor, task);
+	}
+
+	/**
+	 * Run task using the given executor (not the shared single-threaded background queue).
+	 * Useful for long running or blocking tasks (e.g. search) that must not starve code jumps
+	 * and code area loading tasks on the shared queue.
+	 */
+	public synchronized void executeOn(ExecutorService executor, IBackgroundTask task) {
 		InternalTask internalTask = buildTask(task);
-		return taskQueueExecutor.submit(() -> {
+		executor.execute(() -> runTask(internalTask));
+	}
+
+	/**
+	 * Same as {@link #executeOn(ExecutorService, IBackgroundTask)} but returns a future with the
+	 * final task status.
+	 */
+	public synchronized Future<TaskStatus> executeOnWithFuture(ExecutorService executor, IBackgroundTask task) {
+		InternalTask internalTask = buildTask(task);
+		return executor.submit(() -> {
 			runTask(internalTask);
 			return internalTask.getStatus();
 		});

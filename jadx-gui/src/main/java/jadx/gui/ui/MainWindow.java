@@ -141,6 +141,7 @@ import jadx.gui.ui.dialog.CharsetDialog;
 import jadx.gui.ui.dialog.GotoAddressDialog;
 import jadx.gui.ui.dialog.LogViewerDialog;
 import jadx.gui.ui.dialog.SearchDialog;
+import jadx.gui.ui.dialog.StringsDialog;
 import jadx.gui.ui.export.ExportProjectDialog;
 import jadx.gui.ui.filedialog.FileDialogWrapper;
 import jadx.gui.ui.filedialog.FileOpenMode;
@@ -1077,6 +1078,10 @@ public class MainWindow extends JFrame {
 		}
 	}
 
+	public void stringsViewer() {
+		StringsDialog.open(MainWindow.this);
+	}
+
 	public void goToAndroidManifest() {
 		ResourceFile androidManifest = AndroidManifestParser.getAndroidManifest(getWrapper().getResources());
 		if (androidManifest == null) {
@@ -1158,6 +1163,7 @@ public class MainWindow extends JFrame {
 
 		JadxGuiAction syncAction = new JadxGuiAction(ActionModel.SYNC, this.editorSyncManager::sync);
 		JadxGuiAction textSearchAction = new JadxGuiAction(ActionModel.TEXT_SEARCH, this::textSearch);
+		JadxGuiAction stringsAction = new JadxGuiAction(ActionModel.STRINGS, this::stringsViewer);
 		JadxGuiAction clsSearchAction = new JadxGuiAction(ActionModel.CLASS_SEARCH,
 				() -> SearchDialog.search(MainWindow.this, SearchDialog.SearchPreset.CLASS));
 		JadxGuiAction commentSearchAction = new JadxGuiAction(ActionModel.COMMENT_SEARCH,
@@ -1217,6 +1223,8 @@ public class MainWindow extends JFrame {
 		view.add(quickTabsAction.makeCheckBoxMenuItem());
 		view.add(hexViewerMenu);
 		view.add(flatPkgMenuItem);
+		view.addSeparator();
+		view.add(stringsAction);
 		view.addSeparator();
 		view.add(enablePreviewTabAction.makeCheckBoxMenuItem());
 		view.add(syncAction);
@@ -1316,6 +1324,8 @@ public class MainWindow extends JFrame {
 		toolbar.add(goToApplicationAction);
 		toolbar.add(goToAndroidManifestAction);
 		toolbar.addSeparator();
+		toolbar.add(stringsAction);
+		toolbar.addSeparator();
 		toolbar.add(backAction);
 		toolbar.add(forwardAction);
 		toolbar.addSeparator();
@@ -1340,6 +1350,7 @@ public class MainWindow extends JFrame {
 
 		addLoadListener(loaded -> {
 			textSearchAction.setEnabled(loaded);
+			stringsAction.setEnabled(loaded);
 			clsSearchAction.setEnabled(loaded);
 			commentSearchAction.setEnabled(loaded);
 			goToMainActivityAction.setEnabled(loaded);
