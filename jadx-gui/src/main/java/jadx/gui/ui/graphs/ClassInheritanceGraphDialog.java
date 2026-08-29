@@ -58,7 +58,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	private int distanceLimit = 3;
 
 	private Set<String> nodesToAdd;
-	private Set<jadx.core.utils.Pair<String>> edgesToAdd;
+	private Set<Pair<String>> edgesToAdd;
 
 	private Map<String, Integer> nameToNodeID;
 	private int nextNodeID;
@@ -141,7 +141,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 		graphDialog.reload();
 	}
 
-	public void reload() {
+	private void reload() {
 		SwingUtilities.invokeLater(() -> {
 			String graph = generateGraph(cls);
 			getPanel().setGraph(graph);
@@ -164,9 +164,10 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 			RootNode root = rootClass.root();
 			String rootClassName = rootClass.getClassInfo().getType().getObject();
 			ClspGraph classGraph = root.getClsp();
+			InheritanceDataAttr inheritanceData = InheritanceDataAttr.get(root);
 
 			// Collect nodes and edges within distanceLimit into nodesToAdd and edgesToAdd
-			visitClass(classGraph, rootClassName, distanceLimit);
+			visitClass(inheritanceData, rootClassName, distanceLimit);
 
 			// Add nodes to the graph
 			addNodes(f, root, classGraph, rootClassName);
@@ -187,29 +188,29 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	 * If siblings is true, the whole graph will be shown e.g. other parents of children and other
 	 * children of parents.
 	 *
-	 * @param graph         a ClspGraph storing parent and children relationships
-	 * @param classNode     the current class
-	 * @param distanceLimit the distance to display from the current class
+	 * @param inheritanceData a data class storing parent and children relationships
+	 * @param rawName         the current class
+	 * @param distanceLimit   the distance to display from the current class
 	 */
-	private void visitClass(ClspGraph graph, String rawName, int distanceLimit) {
-		visitClass(graph, rawName, distanceLimit, true, true);
+	private void visitClass(InheritanceDataAttr inheritanceData, String rawName, int distanceLimit) {
+		visitClass(inheritanceData, rawName, distanceLimit, true, true);
 	}
 
 	/**
 	 * Walk graph from rawName to find all nodes and edges within distanceLimit steps
 	 *
-	 * @param graph         a ClspGraph storing parent and children relationships
-	 * @param classNode     the current class
-	 * @param distanceLimit the distance to display from the current class
-	 * @param visitChildren whether to visit children of this class
-	 * @param visitParents  whether to visit parents of this class
+	 * @param inheritanceData a data class storing parent and children relationships
+	 * @param rawName         the current class
+	 * @param distanceLimit   the distance to display from the current class
+	 * @param visitChildren   whether to visit children of this class
+	 * @param visitParents    whether to visit parents of this class
 	 */
-	private void visitClass(ClspGraph graph, String rawName, int distanceLimit, boolean visitChildren, boolean visitParents) {
+	private void visitClass(InheritanceDataAttr inheritanceData, String rawName, int distanceLimit, boolean visitChildren,
+			boolean visitParents) {
 		// Don't process this class again if it has already been visited
 		if (nodesToAdd.contains(rawName)) {
 			return;
 		}
-
 		// Add a graph node for the current class
 		nodesToAdd.add(rawName);
 
@@ -217,51 +218,39 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 		if (distanceLimit <= 0) {
 			return;
 		}
-
 		// Get the names of children and parents in the ClspGraph
-		List<String> children = graph.getChildren(rawName);
-		Set<String> parents = graph.getParents(rawName);
-
-		// Visit parents
 		if (visitParents) {
+			Set<String> parents = inheritanceData.getParents(rawName);
 			for (String parent : parents) {
 				// Don't display the java.lang.Object class
-				if (parent == Consts.CLASS_OBJECT) {
+				if (parent.equals(Consts.CLASS_OBJECT)) {
 					continue;
 				}
-
 				Pair<String> edge = new Pair<>(parent, rawName);
-
 				if (edgesToAdd.contains(edge)) {
-					// If the egde has already been added, both sides have already been visited and don't need to be
-					// visited again
+					// If the edge has already been added,
+					// both sides have already been visited and don't need to be visited again
 					continue;
 				}
-
 				// Add an edge from the parent to the current class
 				edgesToAdd.add(edge);
-
 				// Process the parent - adds a node representing the parent
-				visitClass(graph, parent, distanceLimit - 1, siblings, true);
+				visitClass(inheritanceData, parent, distanceLimit - 1, siblings, true);
 			}
 		}
-
-		// Visit children
 		if (visitChildren) {
+			List<String> children = inheritanceData.getChildren(rawName);
 			for (String child : children) {
 				Pair<String> edge = new Pair<>(rawName, child);
-
 				if (edgesToAdd.contains(edge)) {
-					// If the egde has already been added, both sides have already been visited and don't need to be
-					// visited again
+					// If the edge has already been added,
+					// both sides have already been visited and don't need to be visited again
 					continue;
 				}
-
 				// Add an edge from the current class to the child
 				edgesToAdd.add(edge);
-
 				// Process the child - adds a node representing the child
-				visitClass(graph, child, distanceLimit - 1, true, siblings);
+				visitClass(inheritanceData, child, distanceLimit - 1, true, siblings);
 			}
 		}
 	}
@@ -272,7 +261,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	 * @param f the string formatter to contain the graph
 	 */
 	private void addGraphHeader(Formatter f) {
-		// Construct colour strings
+		// Construct color strings
 		Color themeBackground = UIManager.getColor("Panel.background");
 		Color themeForeground = UIManager.getColor("Label.foreground");
 		Color themeShade = UIManager.getColor("TextArea.background");
@@ -328,7 +317,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	 * @param rootClassName the name of the class to highlight in the graph
 	 */
 	private void addNodes(Formatter f, RootNode root, ClspGraph classGraph, String rootClassName) {
-		// Construct colour details
+		// Construct color details
 		Color themeHighlight = UIManager.getColor("Component.focusedBorderColor");
 		Color themeOutOfFocus = UIManager.getColor("Component.disabledBorderColor");
 
@@ -336,14 +325,11 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 		String outOfFocus = "color=" + formatColor(themeOutOfFocus);
 
 		for (String node : nodesToAdd) {
-
 			// Attempt to resolve full ClassNode information
 			ClassNode classNode = root.resolveClass(node);
-
 			if (classNode == null) {
-				// If resolving the ClassNode failes, attempt to resolve partial ClspClass information
+				// If resolving the ClassNode fails, attempt to resolve partial ClspClass information
 				ClspClass clspClass = classGraph.getClsDetails(node);
-
 				if (clspClass == null) {
 					// Display an out of focus node with no additional information
 					addNode(f, node, outOfFocus);
@@ -354,12 +340,11 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 			} else {
 				// Highlight the root class
 				String extra;
-				if (node == rootClassName) {
+				if (node.equals(rootClassName)) {
 					extra = highlightColor;
 				} else {
 					extra = "";
 				}
-
 				// Display a node with full information
 				addNode(f, classNode, extra);
 			}
@@ -372,7 +357,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	 * @param f     a Formatter to build the graph into
 	 * @param cls   the class to add a node for
 	 * @param extra extra formatting to append to the end of the current class's
-	 *              node in the graph e.g. a highlight colour
+	 *              node in the graph e.g. a highlight color
 	 * @return the node id of the node created
 	 */
 	private int addNode(Formatter f, ClassNode cls, String extra) {
@@ -429,7 +414,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 
 			// Format the table
 			if (!table.isEmpty()) {
-				int longestLength = table.stream().map(Pair::getFirst).map(String::length).max((a, b) -> a - b).get();
+				int longestLength = table.stream().map(Pair::getFirst).mapToInt(String::length).max().orElse(0);
 				for (Pair<String> entry : table) {
 					f.format("%-" + longestLength + "s %s\\l", entry.getFirst(), entry.getSecond());
 				}
@@ -450,7 +435,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	 * @param f     a Formatter to build the graph into
 	 * @param cls   the class to add a node for
 	 * @param extra extra formatting to append to the end of the current class's
-	 *              node in the graph e.g. a highlight colour
+	 *              node in the graph e.g. a highlight color
 	 * @return the node id of the node created
 	 */
 	private int addNode(Formatter f, ClspClass cls, String extra) {
@@ -487,7 +472,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 	 * @param f       a Formatter to build the graph into
 	 * @param rawName the class to add a node for
 	 * @param extra   extra formatting to append to the end of the current class's
-	 *                node in the graph e.g. a highlight colour
+	 *                node in the graph e.g. a highlight color
 	 * @return the node id of the node created
 	 */
 	private int addNode(Formatter f, String rawName, String extra) {
@@ -501,7 +486,7 @@ public class ClassInheritanceGraphDialog extends GraphDialog {
 		// Construct name details
 		String name = DotGraphUtils.rawNameFormatName(rawName, cls.root(), longNames);
 
-		// Add the node with name and colour details
+		// Add the node with name and color details
 		f.format("Node_%d [ label=\"{%s}\" %s]\n", nodeID, toDotNodeName(name), extra);
 		return nodeID;
 	}
