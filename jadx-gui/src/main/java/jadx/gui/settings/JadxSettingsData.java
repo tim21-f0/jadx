@@ -78,7 +78,7 @@ public class JadxSettingsData extends JadxGUIArgs {
 	private boolean useAlternativeFileDialog = false;
 	private boolean codeAreaLineWrap = false;
 	private int searchResultsPerPage = 50;
-	private int classTreeFilterExpansionLimit = 500;
+	private int classTreeFilterExpansionLimit = 100;
 	private boolean useAutoSearch = true;
 	private boolean keepCommonDialogOpen = false;
 	private LineNumbersMode lineNumbersMode = LineNumbersMode.AUTO;

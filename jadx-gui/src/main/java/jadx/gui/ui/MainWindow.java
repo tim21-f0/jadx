@@ -32,12 +32,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import javax.swing.AbstractAction;
 import javax.swing.Action;
+import javax.swing.BorderFactory;
 import javax.swing.Box;
-import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JFrame;
@@ -48,18 +49,15 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
-import javax.swing.JSpinner;
 import javax.swing.JSplitPane;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import javax.swing.JToolBar;
 import javax.swing.JTree;
-import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
 import javax.swing.ToolTipManager;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
-import javax.swing.border.EmptyBorder;
 import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeModelEvent;
 import javax.swing.event.TreeModelListener;
@@ -76,12 +74,16 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.formdev.flatlaf.FlatClientProperties;
 import com.formdev.flatlaf.FlatLaf;
 import com.formdev.flatlaf.extras.FlatInspector;
 import com.formdev.flatlaf.extras.FlatUIDefaultsInspector;
 import com.formdev.flatlaf.util.UIScale;
 
 import ch.qos.logback.classic.Level;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+
 import jadx.api.JadxArgs;
 import jadx.api.JavaClass;
 import jadx.api.JavaNode;
@@ -177,12 +179,13 @@ import jadx.gui.utils.Icons;
 import jadx.gui.utils.LafManager;
 import jadx.gui.utils.Link;
 import jadx.gui.utils.NLS;
+import jadx.gui.utils.TextStandardActions;
 import jadx.gui.utils.UiUtils;
 import jadx.gui.utils.dbg.UIWatchDog;
 import jadx.gui.utils.fileswatcher.LiveReloadWorker;
+import jadx.gui.utils.rx.RxUtils;
 import jadx.gui.utils.shortcut.ShortcutsController;
 import jadx.gui.utils.ui.ActionHandler;
-import jadx.gui.utils.ui.DocumentUpdateListener;
 import jadx.gui.utils.ui.FileOpenerHelper;
 import jadx.gui.utils.ui.NodeLabel;
 
@@ -257,10 +260,8 @@ public class MainWindow extends JFrame {
 
 	private final transient RenameMappingsGui renameMappings;
 
-	/**
-	 * This stores the delay timer before applying the filter.
-	 */
-	private TimerTask filterTimerTask;
+	private JTextField treeFilterField;
+	private Disposable treeFilterDisposable;
 
 	public MainWindow(JadxSettings settings) {
 		this.settings = settings;
@@ -1382,7 +1383,7 @@ public class MainWindow extends JFrame {
 
 		DefaultMutableTreeNode treeRootNode = new DefaultMutableTreeNode(NLS.str("msg.open_file"));
 
-		treeModel = new FilterableTreeModel(treeRootNode, getSettings().getClassTreeFilterExpansionLimit());
+		treeModel = new FilterableTreeModel(this, treeRootNode, getSettings().getClassTreeFilterExpansionLimit());
 		tree = new JTree(treeModel);
 		ToolTipManager.sharedInstance().registerComponent(tree);
 
@@ -1467,60 +1468,16 @@ public class MainWindow extends JFrame {
 		progressPane = new ProgressPanel(this, true);
 		issuesPanel = new IssuesPanel(this);
 
-		JPanel leftPane = new JPanel(new BorderLayout());
-		JScrollPane treeScrollPane = new JScrollPane(tree);
-		treeScrollPane.setMinimumSize(new Dimension(100, 150));
+		treeFilterField = new JTextField();
+		TextStandardActions.attach(treeFilterField);
+		treeFilterField.setToolTipText(NLS.str("tree.filter"));
+		treeFilterField.putClientProperty(FlatClientProperties.TEXT_FIELD_SHOW_CLEAR_BUTTON, true);
+		treeFilterField.putClientProperty(FlatClientProperties.PLACEHOLDER_TEXT, NLS.str("tree.filter"));
 
-		JPanel bottomPane = new JPanel(new BorderLayout());
-		bottomPane.add(issuesPanel, BorderLayout.PAGE_START);
-		bottomPane.add(progressPane, BorderLayout.PAGE_END);
-
-		leftPane.add(treeScrollPane, BorderLayout.CENTER);
-		leftPane.add(bottomPane, BorderLayout.PAGE_END);
-
-		JPanel filterPanel = new JPanel(new BorderLayout(5, 5));
-		filterPanel.setBorder(new EmptyBorder(0, 0, 5, 0));
-
-		JTextField filterField = new JTextField();
-		filterField.setToolTipText("Filter classes");
-		filterField.getDocument().addDocumentListener(
-				new DocumentUpdateListener(ev -> {
-					/*
-					 * Wait for 400ms of no keystrokes before actually applying the filter,
-					 * to prevent multiple unneeded UI lockups during typing.
-					 */
-
-					if (filterTimerTask != null) {
-						// new keystroke means cancel the old filter task
-						filterTimerTask.cancel();
-					}
-
-					filterTimerTask = new TimerTask() {
-						@Override
-						public void run() {
-							backgroundExecutor.execute("Preparing class filter " + filterField.getText(),
-									() -> {
-										treeModel.setFilter(filterField.getText());
-									});
-						}
-					};
-
-					new Timer().schedule(filterTimerTask, 400);
-				}));
-
-		JButton filterClearButton = new JButton(Icons.ICON_CLOSE);
-		filterClearButton.setToolTipText("Clear filter");
-
-		filterPanel.add(filterField, BorderLayout.CENTER);
-		filterPanel.add(filterClearButton, BorderLayout.LINE_END);
-
-		filterClearButton.addActionListener(new ActionListener() {
-			@Override
-			public void actionPerformed(ActionEvent e) {
-				filterField.setText("");
-				filterField.repaint();
-			}
-		});
+		treeFilterDisposable = RxUtils.textFieldChanges(treeFilterField)
+				.debounce(300, TimeUnit.MILLISECONDS)
+				.observeOn(Schedulers.newThread())
+				.subscribe(t -> treeModel.setFilter(treeFilterField.getText()));
 
 		treeModel.addTreeModelListener(new TreeModelListener() {
 			@Override
@@ -1541,7 +1498,21 @@ public class MainWindow extends JFrame {
 			}
 		});
 
+		JPanel filterPanel = new JPanel(new BorderLayout());
+		filterPanel.setBorder(BorderFactory.createEmptyBorder(5, 2, 2, 2));
+		filterPanel.add(treeFilterField, BorderLayout.CENTER);
+
+		JPanel leftPane = new JPanel(new BorderLayout());
+		JScrollPane treeScrollPane = new JScrollPane(tree);
+		treeScrollPane.setMinimumSize(new Dimension(100, 150));
+
+		JPanel bottomPane = new JPanel(new BorderLayout());
+		bottomPane.add(issuesPanel, BorderLayout.PAGE_START);
+		bottomPane.add(progressPane, BorderLayout.PAGE_END);
+
 		leftPane.add(filterPanel, BorderLayout.PAGE_START);
+		leftPane.add(treeScrollPane, BorderLayout.CENTER);
+		leftPane.add(bottomPane, BorderLayout.PAGE_END);
 
 		treeSplitPane.setLeftComponent(leftPane);
 
@@ -1685,6 +1656,7 @@ public class MainWindow extends JFrame {
 				UiUtils.uiRunAndWait(() -> {
 					heapUsageBar.reset();
 					editorThemeManager.unload();
+					treeFilterDisposable.dispose();
 					dispose();
 				});
 			} catch (Exception e) {
@@ -1782,6 +1754,10 @@ public class MainWindow extends JFrame {
 
 	public JRoot getTreeRoot() {
 		return treeRoot;
+	}
+
+	public JTextField getTreeFilterField() {
+		return treeFilterField;
 	}
 
 	public JDebuggerPanel getDebuggerPanel() {

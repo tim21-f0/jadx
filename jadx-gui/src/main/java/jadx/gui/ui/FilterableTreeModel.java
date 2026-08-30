@@ -1,9 +1,11 @@
 package jadx.gui.ui;
 
 import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.stream.Collectors;
+import java.util.Set;
+import java.util.concurrent.Future;
 
 import javax.swing.JTree;
 import javax.swing.SwingUtilities;
@@ -14,59 +16,67 @@ import javax.swing.tree.TreePath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import jadx.api.JavaNode;
-import jadx.gui.treemodel.JClass;
+import jadx.api.ResourceType;
+import jadx.gui.jobs.SimpleTask;
+import jadx.gui.jobs.TaskStatus;
 import jadx.gui.treemodel.JNode;
+import jadx.gui.treemodel.JResource;
+import jadx.gui.treemodel.JRoot;
 import jadx.gui.treemodel.TextNode;
+import jadx.gui.utils.UiUtils;
 
 /**
  * A FilterableTreeModel provides dynamic filtering over the decompilation package tree.
  * This filtering is done at the model level, to prevent oddities such as zero-width rows disrupting
  * a keyboard user experience or otherwise causing problems.
- *
- * This class is specialised to filter the main UI pane displaying the decompilation tree. If the
- * fullly qualified path of a tree element is obtainable, filtering will check against that, falling
+ * <p>
+ * This class is specialized to filter the main UI pane displaying the decompilation tree. If the
+ * fully qualified path of a tree element is obtainable, filtering will check against that, falling
  * back to the standard name if the former is unavailable.
  */
 class FilterableTreeModel extends DefaultTreeModel {
 	private static final Logger LOG = LoggerFactory.getLogger(FilterableTreeModel.class);
 
-	// The UI locks up when trying to expand many results.
-	// The compromise here is to cap the number of results we are willing to expand by default when
-	// setting a filter.
-	private int filterExpansionThreshold;
-
-	// the filter string
-	private String filter;
-
-	// Pre-computed tree paths matching the filter
-	// Filtering happens in a two phase process
-	// 1. Filter set (in background) pre computes the results
-	// 2. UI update (in UI thread) with results
-	private final List<TreePath> filteredTreePaths;
-
-	// filterLock ensures no race conditions between the two phase filtering process
-	// and any other accesses to tree elements depending on the filter by other tree listeners
-	private final ReentrantLock filterLock;
+	private final MainWindow mainWindow;
 
 	/**
-	 * Constructs a FilterableTreeModel with given root node, to be used as the root of the unfiltered
-	 * tree.
-	 *
-	 * @param root the root node. Passed directly to the constructor for DefaultTreeModel.
+	 * The UI locks up when trying to expand many results.
+	 * The compromise here is to cap the number of results we are willing to expand by default when
+	 * setting a filter.
 	 */
-	public FilterableTreeModel(TreeNode root, int filterExpansionThreshold) {
+	private int filterExpansionThreshold;
+
+	/**
+	 * The filter string
+	 */
+	private String filter;
+
+	/**
+	 * Pre-computed tree paths matching the filter
+	 * Filtering happens in a two phase process
+	 * 1. Filter set (in background) pre-computes the results
+	 * 2. UI update (in UI thread) with results
+	 */
+	private final List<TreePath> filteredTreePaths;
+
+	/**
+	 * All nodes to filtered paths (including middle nodes)
+	 */
+	private final Set<TreeNode> filteredTreeNodes;
+
+	public FilterableTreeModel(MainWindow mainWindow, TreeNode root, int filterExpansionThreshold) {
 		super(root);
+		this.mainWindow = mainWindow;
 		this.filterExpansionThreshold = filterExpansionThreshold;
 		this.filter = "";
 		this.filteredTreePaths = new ArrayList<>();
-		this.filterLock = new ReentrantLock(true); // Fair reentrant lock guarantees FIFO
+		this.filteredTreeNodes = new HashSet<>();
 	}
 
 	/**
 	 * Sets the filter of the tree by pre-computing tree paths matching the filter and refreshing the
 	 * tree's node structure.
-	 *
+	 * <p>
 	 * This calls `nodeStructureChanged` on the root of the tree, implying a complete refresh of the
 	 * tree data. Unfortunately the declarative nature of the filtering makes it infeasible to give a
 	 * more specific refresh, which would potentially preserve open more of the current state of the
@@ -74,18 +84,12 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 *
 	 * @param newFilter the new filter string, or "" to unset the filter.
 	 */
-	public void setFilter(String newFilter) {
-		this.filterLock.lock();
-		try {
-			this.filter = newFilter;
-			LOG.debug("New class filter '{}'", this.filter);
-			collectFilteredPaths();
-			// setFilter may be invoked from a Timer or background thread; this means we may not be in the swing
-			// UI thread, but nodeStructureChanged must be run on the swing thread!
-			SwingUtilities.invokeLater(() -> this.nodeStructureChanged((TreeNode) getRoot()));
-		} finally {
-			this.filterLock.unlock();
-		}
+	public synchronized void setFilter(String newFilter) {
+		this.filter = newFilter;
+		LOG.debug("New class filter '{}'", newFilter);
+		applyFilterFieldOutline("");
+		collectFilteredPaths();
+		SwingUtilities.invokeLater(() -> this.nodeStructureChanged((TreeNode) getRoot()));
 	}
 
 	/**
@@ -93,13 +97,8 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 * This should ensure that all treeListeners get the same filter value per event.
 	 */
 	@Override
-	public void nodeStructureChanged(TreeNode node) {
-		this.filterLock.lock();
-		try {
-			super.nodeStructureChanged(node);
-		} finally {
-			this.filterLock.unlock();
-		}
+	public synchronized void nodeStructureChanged(TreeNode node) {
+		super.nodeStructureChanged(node);
 	}
 
 	/**
@@ -108,22 +107,21 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 *
 	 * @param tree - tree ui component on which to make the filtered paths visible
 	 */
-	public void makeFilteredPathsVisible(JTree tree) {
-		this.filterLock.lock();
-		try {
-			int count = 0;
-			for (TreePath path : this.filteredTreePaths) {
-				tree.makeVisible(path);
-				++count;
-				if (count >= this.filterExpansionThreshold) {
-					LOG.warn("Capping displayed results for filter '{}' to {}", this.filter,
-							this.filterExpansionThreshold);
-					break;
-				}
+	public synchronized void makeFilteredPathsVisible(JTree tree) {
+		int limit = Math.max(0, filterExpansionThreshold);
+		int count = 0;
+		for (TreePath path : filteredTreePaths) {
+			tree.makeVisible(path);
+			if (limit != 0 && count++ > limit) {
+				LOG.warn("Capping displayed results for filter '{}' to {}", filter, limit);
+				applyFilterFieldOutline("warning");
+				break;
 			}
-		} finally {
-			this.filterLock.unlock();
 		}
+	}
+
+	private void applyFilterFieldOutline(String outlineType) {
+		UiUtils.uiRun(() -> mainWindow.getTreeFilterField().putClientProperty("JComponent.outline", outlineType));
 	}
 
 	public void setFilterExpansionThreshold(int newThreshold) {
@@ -131,38 +129,43 @@ class FilterableTreeModel extends DefaultTreeModel {
 	}
 
 	private void collectFilteredPaths() {
-		this.filteredTreePaths.clear();
-		if (this.filter.isEmpty()) {
+		UiUtils.notUiThreadGuard();
+		filteredTreePaths.clear();
+		filteredTreeNodes.clear();
+		if (filter.isEmpty()) {
 			return;
 		}
-
-		TreeNode rootNode = (TreeNode) this.getRoot();
-
+		JRoot rootNode = (JRoot) this.getRoot();
 		if (rootNode == null) {
 			return;
 		}
-
-		TreePath rootPath = new TreePath(this.getPathToRoot(rootNode));
-
-		collectFilteredPaths(rootPath);
+		Enumeration<TreeNode> en = rootNode.breadthFirstEnumeration();
+		while (en.hasMoreElements()) {
+			TreeNode node = en.nextElement();
+			if (matchesFilter(node)) {
+				TreePath path = new TreePath(this.getPathToRoot(node));
+				filteredTreePaths.add(path);
+				addPathNodes(node);
+			}
+		}
+		if (LOG.isDebugEnabled()) {
+			LOG.debug("Filtered tree paths: {}, nodes: {}", filteredTreePaths.size(), filteredTreeNodes.size());
+		}
+		if (filteredTreePaths.isEmpty()) {
+			applyFilterFieldOutline("error");
+		}
 	}
 
-	private void collectFilteredPaths(TreePath path) {
-		if (path.getLastPathComponent() instanceof JClass) {
-			filteredTreePaths.add(path);
-		} else {
-			int childrenCount = this.getChildCount(path.getLastPathComponent());
-
-			if (childrenCount == 0) {
-				// this is a leaf node that has not passed through a class
-				// e.g. a resource
-				filteredTreePaths.add(path);
+	private void addPathNodes(TreeNode node) {
+		if (!filteredTreeNodes.add(node)) {
+			return;
+		}
+		TreeNode parent = node.getParent();
+		while (parent != null) {
+			if (!filteredTreeNodes.add(parent)) {
+				break;
 			}
-
-			for (int i = 0; i < childrenCount; i++) {
-				Object child = this.getChild(path.getLastPathComponent(), i);
-				collectFilteredPaths(path.pathByAddingChild(child));
-			}
+			parent = parent.getParent();
 		}
 	}
 
@@ -173,99 +176,76 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 * @return true if the filter is considered matched and the node should be displayed in the tree.
 	 */
 	private boolean matchesFilter(Object node) {
-		// `JNode`s are elements in the tree that correspond to a Jadx structure e.g. a JClass or JMethod.
-		// Most elements in the tree should be these; top level elements such as the root 'source code' node
-		// are not, so we unconditionally show non-JNodes.
-		if (node instanceof JNode) {
-			JavaNode javaNode = ((JNode) node).getJavaNode();
-
-			// if possible, retrieve the fully qualified name (i.e. including full pacakge path) for filtering,
-			// else rely on the default name.
-			String name = ((JNode) node).getName();
-			if (javaNode != null) {
-				name = javaNode.getFullName();
-			}
-
-			// there are still some cases where the default name is still null. In this case it's better to show
-			// these than hide.
-			if (name == null) {
-				return true;
-			}
-
-			// if we match the filter, non-case-sensitively, display the node.
-			if (name.toLowerCase().contains(filter.toLowerCase())) {
-				return true;
-			}
-
-			// if we do not match the filter but any of our children do, display the node.
-			for (TreeNode x : (Iterable<TreeNode>) ((JNode) node).children()::asIterator) {
-				if (x instanceof TextNode) {
-					continue;
-				}
-				if (matchesFilter(x)) {
-					return true;
-				}
-
-			}
-
-			// otherwise, hide the node.
+		if (node instanceof TextNode) {
 			return false;
 		}
-
+		if (node instanceof JResource) {
+			JResource res = (JResource) node;
+			if (res.getType() == JResource.JResType.FILE && res.getResFile().getType() == ResourceType.ARSC) {
+				loadInnerResources(res);
+			}
+		}
+		if (node instanceof JNode) {
+			JNode jNode = (JNode) node;
+			String name = jNode.makeString();
+			if (name == null) {
+				LOG.warn("Node {} has null UI string", node);
+				return false;
+			}
+			return name.toLowerCase().contains(filter.toLowerCase());
+		}
 		return false;
 	}
 
-	@Override
-	public Object getChild(Object parent, int index) {
-		// It is worth noting that both this method and the one below it can be called from the UI thread
-		// so may cause UI lock up for users trying to expand the tree during filter execution.
-		// This has not been observed to be too much of an issue during testing since most filters will
-		// be quicker than said user interactions.
-		this.filterLock.lock();
-		try {
-			// whilst getFilteredChildren acts the same as just going to the backing directly when no filter is
-			// set, it must construct the entire list, which requires N calls to getChild on backing (in
-			// getUnfilteredChildren) rather than 1 if we short-circuit it like this.
-			if (filter.equals("")) {
-				return super.getChild(parent, index);
+	private void loadInnerResources(JResource res) {
+		// load inner resource of resource.arsc
+		SimpleTask loadTask = res.getLoadTask();
+		if (loadTask != null) {
+			try {
+				Future<TaskStatus> load = mainWindow.getBackgroundExecutor().executeWithFuture(loadTask);
+				load.get(); // wait for completion
+			} catch (Exception e) {
+				LOG.warn("Failed to load resource", e);
 			}
-
-			return getFilteredChildren(parent).get(index);
-		} finally {
-			this.filterLock.unlock();
 		}
 	}
 
 	@Override
-	public int getChildCount(Object parent) {
-		this.filterLock.lock();
-		try {
-			if (filter.equals("")) {
-				return super.getChildCount(parent);
+	public synchronized Object getChild(Object parent, int index) {
+		if (filter.isEmpty()) {
+			return super.getChild(parent, index);
+		}
+		int i = 0;
+		Enumeration<? extends TreeNode> en = ((TreeNode) parent).children();
+		while (en.hasMoreElements()) {
+			TreeNode child = en.nextElement();
+			if (filteredTreeNodes.contains(child)) {
+				if (i == index) {
+					return child;
+				}
+				i++;
 			}
-
-			return getFilteredChildren(parent).size();
-		} finally {
-			this.filterLock.unlock();
 		}
+		throw new IllegalArgumentException("No child at index " + index);
 	}
 
-	private List<Object> getUnfilteredChildren(Object parent) {
-
-		int numChildren = super.getChildCount(parent);
-		List<Object> results = new ArrayList<>();
-
-		for (int i = 0; i < numChildren; i++) {
-			results.add(super.getChild(parent, i));
+	@Override
+	public synchronized int getChildCount(Object parent) {
+		if (filter.isEmpty()) {
+			return super.getChildCount(parent);
 		}
-
-		return results;
+		TreeNode parentNode = (TreeNode) parent;
+		if (!filteredTreeNodes.contains(parentNode)) {
+			return 0;
+		}
+		int count = 0;
+		Enumeration<? extends TreeNode> en = parentNode.children();
+		while (en.hasMoreElements()) {
+			TreeNode child = en.nextElement();
+			if (filteredTreeNodes.contains(child)) {
+				count++;
+			}
+		}
+		return count;
 	}
-
-	private List<Object> getFilteredChildren(Object parent) {
-		List<Object> unfiltered = getUnfilteredChildren(parent);
-
-		return unfiltered.stream().filter(obj -> matchesFilter(obj)).collect(Collectors.toList());
-	}
-
 }
