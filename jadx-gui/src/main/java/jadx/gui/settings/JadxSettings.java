@@ -420,14 +420,6 @@ public class JadxSettings {
 		settingsData.setSearchResultsPerPage(searchResultsPerPage);
 	}
 
-	public int getClassTreeFilterExpansionLimit() {
-		return settingsData.getClassTreeFilterExpansionLimit();
-	}
-
-	public void setClassTreeFilterExpansionLimit(int classTreeFilterExpansionLimit) {
-		settingsData.setClassTreeFilterExpansionLimit(classTreeFilterExpansionLimit);
-	}
-
 	public boolean isUseAutoSearch() {
 		return settingsData.isUseAutoSearch();
 	}

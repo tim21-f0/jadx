@@ -59,8 +59,6 @@ import javax.swing.ToolTipManager;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
 import javax.swing.event.TreeExpansionEvent;
-import javax.swing.event.TreeModelEvent;
-import javax.swing.event.TreeModelListener;
 import javax.swing.event.TreeWillExpandListener;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
@@ -1383,8 +1381,9 @@ public class MainWindow extends JFrame {
 
 		DefaultMutableTreeNode treeRootNode = new DefaultMutableTreeNode(NLS.str("msg.open_file"));
 
-		treeModel = new FilterableTreeModel(this, treeRootNode, getSettings().getClassTreeFilterExpansionLimit());
+		treeModel = new FilterableTreeModel(this, treeRootNode);
 		tree = new JTree(treeModel);
+		tree.setLargeModel(true);
 		ToolTipManager.sharedInstance().registerComponent(tree);
 
 		tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -1479,25 +1478,6 @@ public class MainWindow extends JFrame {
 				.observeOn(Schedulers.newThread())
 				.subscribe(t -> treeModel.setFilter(treeFilterField.getText()));
 
-		treeModel.addTreeModelListener(new TreeModelListener() {
-			@Override
-			public void treeNodesChanged(TreeModelEvent e) {
-			}
-
-			@Override
-			public void treeNodesInserted(TreeModelEvent e) {
-			}
-
-			@Override
-			public void treeNodesRemoved(TreeModelEvent e) {
-			}
-
-			@Override
-			public void treeStructureChanged(TreeModelEvent e) {
-				treeModel.makeFilteredPathsVisible(tree);
-			}
-		});
-
 		JPanel filterPanel = new JPanel(new BorderLayout());
 		filterPanel.setBorder(BorderFactory.createEmptyBorder(5, 2, 2, 2));
 		filterPanel.add(treeFilterField, BorderLayout.CENTER);
@@ -1505,6 +1485,7 @@ public class MainWindow extends JFrame {
 		JPanel leftPane = new JPanel(new BorderLayout());
 		JScrollPane treeScrollPane = new JScrollPane(tree);
 		treeScrollPane.setMinimumSize(new Dimension(100, 150));
+		treeScrollPane.getVerticalScrollBar().addAdjustmentListener(ev -> treeModel.expandVisibleFilteredNodes(tree));
 
 		JPanel bottomPane = new JPanel(new BorderLayout());
 		bottomPane.add(issuesPanel, BorderLayout.PAGE_START);
@@ -1620,7 +1601,6 @@ public class MainWindow extends JFrame {
 		}
 		tree.setFont(settings.getCodeFont());
 		tree.setRowHeight(-1);
-		treeModel.setFilterExpansionThreshold(settings.getClassTreeFilterExpansionLimit());
 
 		tabbedPane.loadSettings();
 		if (logPanel != null) {
@@ -1750,6 +1730,10 @@ public class MainWindow extends JFrame {
 
 	public BackgroundExecutor getBackgroundExecutor() {
 		return backgroundExecutor;
+	}
+
+	public JTree getTree() {
+		return tree;
 	}
 
 	public JRoot getTreeRoot() {

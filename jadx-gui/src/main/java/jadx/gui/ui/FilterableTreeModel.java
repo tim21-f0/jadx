@@ -1,9 +1,8 @@
 package jadx.gui.ui;
 
-import java.util.ArrayList;
+import java.awt.Rectangle;
 import java.util.Enumeration;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 
@@ -19,6 +18,8 @@ import org.slf4j.LoggerFactory;
 import jadx.api.ResourceType;
 import jadx.gui.jobs.SimpleTask;
 import jadx.gui.jobs.TaskStatus;
+import jadx.gui.treemodel.JClass;
+import jadx.gui.treemodel.JMethod;
 import jadx.gui.treemodel.JNode;
 import jadx.gui.treemodel.JResource;
 import jadx.gui.treemodel.JRoot;
@@ -40,36 +41,19 @@ class FilterableTreeModel extends DefaultTreeModel {
 	private final MainWindow mainWindow;
 
 	/**
-	 * The UI locks up when trying to expand many results.
-	 * The compromise here is to cap the number of results we are willing to expand by default when
-	 * setting a filter.
-	 */
-	private int filterExpansionThreshold;
-
-	/**
 	 * The filter string
 	 */
-	private String filter;
-
-	/**
-	 * Pre-computed tree paths matching the filter
-	 * Filtering happens in a two phase process
-	 * 1. Filter set (in background) pre-computes the results
-	 * 2. UI update (in UI thread) with results
-	 */
-	private final List<TreePath> filteredTreePaths;
+	private volatile String filter;
 
 	/**
 	 * All nodes to filtered paths (including middle nodes)
 	 */
 	private final Set<TreeNode> filteredTreeNodes;
 
-	public FilterableTreeModel(MainWindow mainWindow, TreeNode root, int filterExpansionThreshold) {
+	public FilterableTreeModel(MainWindow mainWindow, TreeNode root) {
 		super(root);
 		this.mainWindow = mainWindow;
-		this.filterExpansionThreshold = filterExpansionThreshold;
 		this.filter = "";
-		this.filteredTreePaths = new ArrayList<>();
 		this.filteredTreeNodes = new HashSet<>();
 	}
 
@@ -90,6 +74,7 @@ class FilterableTreeModel extends DefaultTreeModel {
 		applyFilterFieldOutline("");
 		collectFilteredPaths();
 		SwingUtilities.invokeLater(() -> this.nodeStructureChanged((TreeNode) getRoot()));
+		SwingUtilities.invokeLater(() -> expandVisibleFilteredNodes(mainWindow.getTree()));
 	}
 
 	/**
@@ -97,26 +82,37 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 * This should ensure that all treeListeners get the same filter value per event.
 	 */
 	@Override
-	public synchronized void nodeStructureChanged(TreeNode node) {
+	public void nodeStructureChanged(TreeNode node) {
 		super.nodeStructureChanged(node);
 	}
 
 	/**
-	 * Expands the filtered tree paths in the UI, should be called from a treeStructureChanged listener
-	 * after a filter has been set.
-	 *
-	 * @param tree - tree ui component on which to make the filtered paths visible
+	 * If filter enabled, expand all visible nodes.
 	 */
-	public synchronized void makeFilteredPathsVisible(JTree tree) {
-		int limit = Math.max(0, filterExpansionThreshold);
-		int count = 0;
-		for (TreePath path : filteredTreePaths) {
-			tree.makeVisible(path);
-			if (limit != 0 && count++ > limit) {
-				LOG.warn("Capping displayed results for filter '{}' to {}", filter, limit);
-				applyFilterFieldOutline("warning");
+	public void expandVisibleFilteredNodes(JTree tree) {
+		if (filter.isEmpty()) {
+			return;
+		}
+		Rectangle rect = tree.getVisibleRect();
+		int startRow = tree.getClosestRowForLocation(0, rect.y);
+		int bottom = rect.y + rect.height - 1;
+		while (true) {
+			int lastRow = tree.getClosestRowForLocation(0, bottom);
+			if (lastRow <= startRow) {
 				break;
 			}
+			// limit updates for one iteration
+			int last = Math.min(startRow + 20, lastRow);
+			for (int i = startRow; i < last; i++) {
+				TreePath path = tree.getPathForRow(i);
+				Object node = path.getLastPathComponent();
+				if (node instanceof JClass) {
+					// don't auto expand methods
+				} else {
+					tree.expandPath(path);
+				}
+			}
+			startRow = last;
 		}
 	}
 
@@ -124,13 +120,8 @@ class FilterableTreeModel extends DefaultTreeModel {
 		UiUtils.uiRun(() -> mainWindow.getTreeFilterField().putClientProperty("JComponent.outline", outlineType));
 	}
 
-	public void setFilterExpansionThreshold(int newThreshold) {
-		this.filterExpansionThreshold = newThreshold;
-	}
-
 	private void collectFilteredPaths() {
 		UiUtils.notUiThreadGuard();
-		filteredTreePaths.clear();
 		filteredTreeNodes.clear();
 		if (filter.isEmpty()) {
 			return;
@@ -139,19 +130,21 @@ class FilterableTreeModel extends DefaultTreeModel {
 		if (rootNode == null) {
 			return;
 		}
-		Enumeration<TreeNode> en = rootNode.breadthFirstEnumeration();
+		int nodesCount = 0;
+		int filteredCount = 0;
+		Enumeration<TreeNode> en = rootNode.depthFirstEnumeration();
 		while (en.hasMoreElements()) {
 			TreeNode node = en.nextElement();
+			nodesCount++;
 			if (matchesFilter(node)) {
-				TreePath path = new TreePath(this.getPathToRoot(node));
-				filteredTreePaths.add(path);
 				addPathNodes(node);
+				filteredCount++;
 			}
 		}
 		if (LOG.isDebugEnabled()) {
-			LOG.debug("Filtered tree paths: {}, nodes: {}", filteredTreePaths.size(), filteredTreeNodes.size());
+			LOG.debug("Total nodes: {}, filtered: {}", nodesCount, filteredCount);
 		}
-		if (filteredTreePaths.isEmpty()) {
+		if (filteredTreeNodes.isEmpty()) {
 			applyFilterFieldOutline("error");
 		}
 	}
@@ -176,7 +169,7 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 * @return true if the filter is considered matched and the node should be displayed in the tree.
 	 */
 	private boolean matchesFilter(Object node) {
-		if (node instanceof TextNode) {
+		if (node instanceof TextNode || node instanceof JMethod) {
 			return false;
 		}
 		if (node instanceof JResource) {
@@ -211,8 +204,8 @@ class FilterableTreeModel extends DefaultTreeModel {
 	}
 
 	@Override
-	public synchronized Object getChild(Object parent, int index) {
-		if (filter.isEmpty()) {
+	public Object getChild(Object parent, int index) {
+		if (filter.isEmpty() || parent instanceof JClass /* allow to expand and view all methods */) {
 			return super.getChild(parent, index);
 		}
 		int i = 0;
@@ -230,7 +223,7 @@ class FilterableTreeModel extends DefaultTreeModel {
 	}
 
 	@Override
-	public synchronized int getChildCount(Object parent) {
+	public int getChildCount(Object parent) {
 		if (filter.isEmpty()) {
 			return super.getChildCount(parent);
 		}
