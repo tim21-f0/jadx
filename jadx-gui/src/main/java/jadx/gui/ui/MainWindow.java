@@ -41,6 +41,7 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.JCheckBox;
 import javax.swing.JCheckBoxMenuItem;
+import javax.swing.JComponent;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JMenu;
@@ -54,6 +55,7 @@ import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import javax.swing.JToolBar;
 import javax.swing.JTree;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.ToolTipManager;
 import javax.swing.UIManager;
@@ -79,6 +81,7 @@ import com.formdev.flatlaf.extras.FlatUIDefaultsInspector;
 import com.formdev.flatlaf.util.UIScale;
 
 import ch.qos.logback.classic.Level;
+import hu.akarnokd.rxjava3.swing.SwingSchedulers;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
@@ -260,6 +263,7 @@ public class MainWindow extends JFrame {
 
 	private JTextField treeFilterField;
 	private Disposable treeFilterDisposable;
+	private Disposable treeScrollDisposable;
 
 	public MainWindow(JadxSettings settings) {
 		this.settings = settings;
@@ -823,6 +827,7 @@ public class MainWindow extends JFrame {
 		treeRoot = new JRoot(this);
 		treeRoot.setFlatPackages(isFlattenPackage);
 		treeModel.setRoot(treeRoot);
+		treeFilterField.setText("");
 		addTreeCustomNodes();
 		treeRoot.update();
 		reloadTree();
@@ -1472,6 +1477,8 @@ public class MainWindow extends JFrame {
 		treeFilterField.setToolTipText(NLS.str("tree.filter"));
 		treeFilterField.putClientProperty(FlatClientProperties.TEXT_FIELD_SHOW_CLEAR_BUTTON, true);
 		treeFilterField.putClientProperty(FlatClientProperties.PLACEHOLDER_TEXT, NLS.str("tree.filter"));
+		treeFilterField.registerKeyboardAction(ev -> treeFilterField.setText(""),
+				KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_FOCUSED);
 
 		treeFilterDisposable = RxUtils.textFieldChanges(treeFilterField)
 				.debounce(300, TimeUnit.MILLISECONDS)
@@ -1485,7 +1492,9 @@ public class MainWindow extends JFrame {
 		JPanel leftPane = new JPanel(new BorderLayout());
 		JScrollPane treeScrollPane = new JScrollPane(tree);
 		treeScrollPane.setMinimumSize(new Dimension(100, 150));
-		treeScrollPane.getVerticalScrollBar().addAdjustmentListener(ev -> treeModel.expandVisibleFilteredNodes(tree));
+		treeScrollDisposable = RxUtils.scrollBarEvents(treeScrollPane.getVerticalScrollBar())
+				.observeOn(SwingSchedulers.edt())
+				.subscribe(v -> treeModel.expandVisibleFilteredNodes(tree));
 
 		JPanel bottomPane = new JPanel(new BorderLayout());
 		bottomPane.add(issuesPanel, BorderLayout.PAGE_START);
@@ -1634,10 +1643,14 @@ public class MainWindow extends JFrame {
 
 				closeAll();
 				UiUtils.uiRunAndWait(() -> {
-					heapUsageBar.reset();
-					editorThemeManager.unload();
-					treeFilterDisposable.dispose();
-					dispose();
+					try {
+						heapUsageBar.reset();
+						editorThemeManager.unload();
+						treeFilterDisposable.dispose();
+						treeScrollDisposable.dispose();
+					} finally {
+						dispose();
+					}
 				});
 			} catch (Exception e) {
 				LOG.error("Close window error", e);

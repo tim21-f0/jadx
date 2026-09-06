@@ -1,8 +1,10 @@
 package jadx.gui.ui;
 
 import java.awt.Rectangle;
+import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 
@@ -12,6 +14,7 @@ import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreeNode;
 import javax.swing.tree.TreePath;
 
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,11 +53,23 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 */
 	private final Set<TreeNode> filteredTreeNodes;
 
+	/**
+	 * Store nodes expanded automatically to prevent re-expand for nodes collapsed by user
+	 */
+	private final Set<JNode> autoExpandedNodes;
+
+	/**
+	 * Very often 'getChild' method called for all children after 'getChildCount' call.
+	 * Save children list for fast child return.
+	 */
+	private final CacheNode cacheNode = new CacheNode();
+
 	public FilterableTreeModel(MainWindow mainWindow, TreeNode root) {
 		super(root);
 		this.mainWindow = mainWindow;
 		this.filter = "";
 		this.filteredTreeNodes = new HashSet<>();
+		this.autoExpandedNodes = new HashSet<>();
 	}
 
 	/**
@@ -70,7 +85,9 @@ class FilterableTreeModel extends DefaultTreeModel {
 	 */
 	public synchronized void setFilter(String newFilter) {
 		this.filter = newFilter;
-		LOG.debug("New class filter '{}'", newFilter);
+		this.autoExpandedNodes.clear();
+		this.cacheNode.clear();
+		LOG.debug("New tree filter '{}'", newFilter);
 		applyFilterFieldOutline("");
 		collectFilteredPaths();
 		SwingUtilities.invokeLater(() -> this.nodeStructureChanged((TreeNode) getRoot()));
@@ -103,13 +120,15 @@ class FilterableTreeModel extends DefaultTreeModel {
 			}
 			// limit updates for one iteration
 			int last = Math.min(startRow + 20, lastRow);
-			for (int i = startRow; i < last; i++) {
+			for (int i = startRow; i <= lastRow; i++) {
 				TreePath path = tree.getPathForRow(i);
-				Object node = path.getLastPathComponent();
+				JNode node = (JNode) path.getLastPathComponent();
 				if (node instanceof JClass) {
 					// don't auto expand methods
 				} else {
-					tree.expandPath(path);
+					if (autoExpandedNodes.add(node)) {
+						tree.expandPath(path);
+					}
 				}
 			}
 			startRow = last;
@@ -204,8 +223,21 @@ class FilterableTreeModel extends DefaultTreeModel {
 		}
 	}
 
+	private static final class CacheNode {
+		private @Nullable TreeNode parent;
+		private final List<TreeNode> children = new ArrayList<>();
+
+		public void clear() {
+			parent = null;
+			children.clear();
+		}
+	}
+
 	@Override
 	public Object getChild(Object parent, int index) {
+		if (cacheNode.parent == parent) {
+			return cacheNode.children.get(index);
+		}
 		if (filter.isEmpty() || parent instanceof JClass /* allow to expand and view all methods */) {
 			return super.getChild(parent, index);
 		}
@@ -232,11 +264,16 @@ class FilterableTreeModel extends DefaultTreeModel {
 		if (!filteredTreeNodes.contains(parentNode)) {
 			return 0;
 		}
+		cacheNode.parent = parentNode;
+		List<TreeNode> children = cacheNode.children;
+		children.clear();
+
 		int count = 0;
 		Enumeration<? extends TreeNode> en = parentNode.children();
 		while (en.hasMoreElements()) {
 			TreeNode child = en.nextElement();
 			if (filteredTreeNodes.contains(child)) {
+				children.add(child);
 				count++;
 			}
 		}
