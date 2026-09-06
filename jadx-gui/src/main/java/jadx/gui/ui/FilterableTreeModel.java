@@ -126,13 +126,14 @@ class FilterableTreeModel extends DefaultTreeModel {
 		if (filter.isEmpty()) {
 			return;
 		}
-		JRoot rootNode = (JRoot) this.getRoot();
-		if (rootNode == null) {
-			return;
+
+		Object rootNode = this.getRoot();
+		if (!(rootNode instanceof JRoot)) {
+			return; // root node is null or of a different type
 		}
 		int nodesCount = 0;
 		int filteredCount = 0;
-		Enumeration<TreeNode> en = rootNode.depthFirstEnumeration();
+		Enumeration<TreeNode> en = ((JRoot) rootNode).depthFirstEnumeration();
 		while (en.hasMoreElements()) {
 			TreeNode node = en.nextElement();
 			nodesCount++;
